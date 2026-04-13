@@ -36,8 +36,8 @@ _GEMINI_MODEL = None
 # CẤU HÌNH
 # =============================================================================
 
-TOP_K_SEARCH = 10    # Số chunk lấy từ vector store trước rerank (search rộng)
-TOP_K_SELECT = 3     # Số chunk gửi vào prompt sau rerank/select (top-3 sweet spot)
+TOP_K_SEARCH = 10  # Số chunk lấy từ vector store trước rerank (search rộng)
+TOP_K_SELECT = 3  # Số chunk gửi vào prompt sau rerank/select (top-3 sweet spot)
 
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
@@ -45,6 +45,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # =============================================================================
 # RETRIEVAL — DENSE (Vector Search)
 # =============================================================================
+
 
 def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]]:
     """
@@ -100,11 +101,13 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]
 
     chunks: List[Dict[str, Any]] = []
     for doc, meta, distance in zip(documents, metadatas, distances):
-        chunks.append({
-            "text": doc,
-            "metadata": meta or {},
-            "score": 1 - float(distance),
-        })
+        chunks.append(
+            {
+                "text": doc,
+                "metadata": meta or {},
+                "score": 1 - float(distance),
+            }
+        )
     return chunks
 
 
@@ -121,11 +124,13 @@ def _load_all_chunks_from_chroma() -> List[Dict[str, Any]]:
 
     all_chunks: List[Dict[str, Any]] = []
     for doc, meta in zip(docs, metas):
-        all_chunks.append({
-            "text": doc,
-            "metadata": meta or {},
-            "score": 0.0,
-        })
+        all_chunks.append(
+            {
+                "text": doc,
+                "metadata": meta or {},
+                "score": 0.0,
+            }
+        )
     return all_chunks
 
 
@@ -133,6 +138,7 @@ def _load_all_chunks_from_chroma() -> List[Dict[str, Any]]:
 # RETRIEVAL — SPARSE / BM25 (Keyword Search)
 # Dùng cho Sprint 3 Variant hoặc kết hợp Hybrid
 # =============================================================================
+
 
 def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]]:
     """
@@ -168,7 +174,9 @@ def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any
     all_chunks, bm25 = _BM25_CACHE
     tokenized_query = query.lower().split()
     scores = bm25.get_scores(tokenized_query)
-    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[
+        :top_k
+    ]
 
     max_score = max([scores[i] for i in top_indices], default=0.0)
     if max_score <= 0:
@@ -177,18 +185,20 @@ def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any
     results: List[Dict[str, Any]] = []
     for idx in top_indices:
         chunk = all_chunks[idx]
-        results.append({
-            "text": chunk["text"],
-            "metadata": chunk["metadata"],
-            "score": float(scores[idx]) / max_score,
-        })
+        results.append(
+            {
+                "text": chunk["text"],
+                "metadata": chunk["metadata"],
+                "score": float(scores[idx]) / max_score,
+            }
+        )
     return results
-
 
 
 # =============================================================================
 # RETRIEVAL — HYBRID (Dense + Sparse với Reciprocal Rank Fusion)
 # =============================================================================
+
 
 def retrieve_hybrid(
     query: str,
@@ -219,16 +229,46 @@ def retrieve_hybrid(
     - Corpus có cả câu tự nhiên VÀ tên riêng, mã lỗi, điều khoản
     - Query như "Approval Matrix" khi doc đổi tên thành "Access Control SOP"
     """
-    # TODO Sprint 3: Implement hybrid RRF
-    # Tạm thời fallback về dense
-    print("[retrieve_hybrid] Chưa implement RRF — fallback về dense")
-    return retrieve_dense(query, top_k)
+    dense_results = retrieve_dense(query, top_k=top_k * 2)
+    sparse_results = retrieve_sparse(query, top_k=top_k * 2)
+
+    # Reciprocal Rank Fusion (RRF)
+    # RRF_score(doc) = sum( weight / (60 + rank) )
+    rrf_scores = {}  # {text: score}
+    chunk_map = {}  # {text: metadata}
+
+    # Process dense
+    for rank, chunk in enumerate(dense_results, 1):
+        text = chunk["text"]
+        rrf_scores[text] = rrf_scores.get(text, 0) + dense_weight * (1.0 / (60 + rank))
+        chunk_map[text] = chunk["metadata"]
+
+    # Process sparse
+    for rank, chunk in enumerate(sparse_results, 1):
+        text = chunk["text"]
+        rrf_scores[text] = rrf_scores.get(text, 0) + sparse_weight * (1.0 / (60 + rank))
+        if text not in chunk_map:
+            chunk_map[text] = chunk["metadata"]
+
+    # Sort by RRF score
+    sorted_texts = sorted(rrf_scores.keys(), key=lambda t: rrf_scores[t], reverse=True)[
+        :top_k
+    ]
+
+    hybrid_results = []
+    for text in sorted_texts:
+        hybrid_results.append(
+            {"text": text, "metadata": chunk_map[text], "score": rrf_scores[text]}
+        )
+
+    return hybrid_results
 
 
 # =============================================================================
 # RERANK (Sprint 3 alternative)
 # Cross-encoder để chấm lại relevance sau search rộng
 # =============================================================================
+
 
 def rerank(
     query: str,
@@ -260,14 +300,32 @@ def rerank(
     - Dense/hybrid trả về nhiều chunk nhưng có noise
     - Muốn chắc chắn chỉ 3-5 chunk tốt nhất vào prompt
     """
-    # TODO Sprint 3: Implement rerank
-    # Tạm thời trả về top_k đầu tiên (không rerank)
-    return candidates[:top_k]
+    if not candidates:
+        return []
+
+    from sentence_transformers import CrossEncoder
+
+    # Sử dụng model Cross-Encoder nhẹ nhưng hiệu quả
+    # ms-marco-MiniLM-L-6-v2 là "standard" model cho reranking
+    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+    pairs = [[query, chunk["text"]] for chunk in candidates]
+    scores = model.predict(pairs)
+
+    ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+
+    results = []
+    for chunk, score in ranked[:top_k]:
+        chunk["rerank_score"] = float(score)
+        results.append(chunk)
+
+    return results
 
 
 # =============================================================================
 # QUERY TRANSFORMATION (Sprint 3 alternative)
 # =============================================================================
+
 
 def transform_query(query: str, strategy: str = "expansion") -> List[str]:
     """
@@ -303,6 +361,7 @@ def transform_query(query: str, strategy: str = "expansion") -> List[str]:
 # =============================================================================
 # GENERATION — GROUNDED ANSWER FUNCTION
 # =============================================================================
+
 
 def build_context_block(chunks: List[Dict[str, Any]]) -> str:
     """
@@ -454,7 +513,9 @@ def rag_answer(
         print(f"\n[RAG] Query: {query}")
         print(f"[RAG] Retrieved {len(candidates)} candidates (mode={retrieval_mode})")
         for i, c in enumerate(candidates[:3]):
-            print(f"  [{i+1}] score={c.get('score', 0):.3f} | {c['metadata'].get('source', '?')}")
+            print(
+                f"  [{i + 1}] score={c.get('score', 0):.3f} | {c['metadata'].get('source', '?')}"
+            )
 
     # --- Bước 2: Rerank (optional) ---
     if use_rerank:
@@ -476,10 +537,7 @@ def rag_answer(
     answer = call_llm(prompt)
 
     # --- Bước 5: Extract sources ---
-    sources = list({
-        c["metadata"].get("source", "unknown")
-        for c in candidates
-    })
+    sources = list({c["metadata"].get("source", "unknown") for c in candidates})
 
     return {
         "query": query,
@@ -494,6 +552,7 @@ def rag_answer(
 # SPRINT 3: SO SÁNH BASELINE VS VARIANT
 # =============================================================================
 
+
 def compare_retrieval_strategies(query: str) -> None:
     """
     So sánh các retrieval strategies với cùng một query.
@@ -504,9 +563,9 @@ def compare_retrieval_strategies(query: str) -> None:
 
     A/B Rule (từ slide): Chỉ đổi MỘT biến mỗi lần.
     """
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Query: {query}")
-    print('='*60)
+    print("=" * 60)
 
     strategies = ["dense", "hybrid"]  # Thêm "sparse" sau khi implement
 
@@ -547,7 +606,9 @@ if __name__ == "__main__":
             print(f"Answer: {result['answer']}")
             print(f"Sources: {result['sources']}")
         except NotImplementedError:
-            print("Chưa implement — hoàn thành TODO trong retrieve_dense() và call_llm() trước.")
+            print(
+                "Chưa implement — hoàn thành TODO trong retrieve_dense() và call_llm() trước."
+            )
         except Exception as e:
             print(f"Lỗi: {e}")
 
