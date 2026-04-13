@@ -18,7 +18,7 @@
 ```
 
 **Mô tả ngắn gọn:**
-> TODO: Mô tả hệ thống trong 2-3 câu. Nhóm xây gì? Cho ai dùng? Giải quyết vấn đề gì?
+> Hệ thống RAG hỗ trợ nhân viên nội bộ tra cứu nhanh chóng và chính xác các quy định, chính sách, hướng dẫn từ các phòng ban (CS, IT, HR). Bằng cách kết hợp ChromaDB và LLM với chiến lược Hybrid Search + Rerank, hệ thống giải quyết vấn đề tìm kiếm thông tin không hiệu quả, cung cấp câu trả lời có trích dẫn nguồn uy tín.
 
 ---
 
@@ -27,22 +27,22 @@
 ### Tài liệu được index
 | File | Nguồn | Department | Số chunk |
 |------|-------|-----------|---------|
-| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | TODO |
-| `sla_p1_2026.txt` | support/sla-p1-2026.pdf | IT | TODO |
-| `access_control_sop.txt` | it/access-control-sop.md | IT Security | TODO |
-| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | TODO |
-| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | TODO |
+| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | ~10 |
+| `sla_p1_2026.txt` | support/sla-p1-2026.pdf | IT | ~10 |
+| `access_control_sop.txt` | it/access-control-sop.md | IT Security | ~15 |
+| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | ~12 |
+| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | ~15 |
 
 ### Quyết định chunking
 | Tham số | Giá trị | Lý do |
 |---------|---------|-------|
-| Chunk size | TODO tokens | TODO |
-| Overlap | TODO tokens | TODO |
-| Chunking strategy | Heading-based / paragraph-based | TODO |
-| Metadata fields | source, section, effective_date, department, access | Phục vụ filter, freshness, citation |
+| Chunk size | 400 tokens | Tối ưu với các text-embedding models và duy trì đủ ngữ cảnh 1 đoạn văn. |
+| Overlap | 80 tokens | Không làm đứt mạch văn bản, giữ lại đủ context cho chunk sau. |
+| Chunking strategy | Heading-based / paragraph-based | Chia theo từng section và paragraph trước để cắt tài liệu chuẩn semantic, thay vì cắt ngang từ một cách cơ học. |
+| Metadata fields | source, section, effective_date, department, access | Phục vụ metadata filter, freshness filter, và citation khi LLM tạo answer. |
 
 ### Embedding model
-- **Model**: TODO (OpenAI text-embedding-3-small / paraphrase-multilingual-MiniLM-L12-v2)
+- **Model**: OpenAI text-embedding-3-small (fallback: paraphrase-multilingual-MiniLM-L12-v2)
 - **Vector store**: ChromaDB (PersistentClient)
 - **Similarity metric**: Cosine
 
@@ -61,15 +61,14 @@
 ### Variant (Sprint 3)
 | Tham số | Giá trị | Thay đổi so với baseline |
 |---------|---------|------------------------|
-| Strategy | TODO (hybrid / dense) | TODO |
-| Top-k search | TODO | TODO |
-| Top-k select | TODO | TODO |
-| Rerank | TODO (cross-encoder / MMR) | TODO |
-| Query transform | TODO (expansion / HyDE / decomposition) | TODO |
+| Strategy | Hybrid (dense + sparse) | Đổi từ dense sang hybrid |
+| Top-k search | 10 | Giữ nguyên |
+| Top-k select | 3 | Chọn lọc kỹ hơn bằng rerank |
+| Rerank | Cross-encoder | Thêm Rerank qua ms-marco-MiniLM-L-6-v2 |
+| Query transform | Có (expansion) | Biến đổi query để tăng độ phủ |
 
 **Lý do chọn variant này:**
-> TODO: Giải thích tại sao chọn biến này để tune.
-> Ví dụ: "Chọn hybrid vì corpus có cả câu tự nhiên (policy) lẫn mã lỗi và tên chuyên ngành (SLA ticket P1, ERR-403)."
+> Cơ sở dữ liệu và query của người dùng có ngôn ngữ tự nhiên lẫn từ khoá kỹ thuật, tên lỗi (ví dụ: ERR-403-AUTH, P1). Dense model khó cover các exact matches mã lỗi. Hybrid Search (BM25 + Dense) với RRF mang lại kết quả hội tụ tuyệt vời. Thêm Reranking (cross-encoder) giúp các docs có độ liên quan chặt chẽ thực sự được chọn vào top 3.
 
 ---
 
@@ -77,18 +76,20 @@
 
 ### Grounded Prompt Template
 ```
-Answer only from the retrieved context below.
-If the context is insufficient, say you do not know.
-Cite the source field when possible.
-Keep your answer short, clear, and factual.
+<persona>
+You are an internal policy assistant for the company...
+</persona>
+
+<rules>
+- ALWAYS check retrieved document context before answering...
+- ALWAYS cite the source document and section...
+</rules>
 
 Question: {query}
 
 Context:
 [1] {source} | {section} | score={score}
-{chunk_text}
-
-[2] ...
+{chunk_text} ...
 
 Answer:
 ```
@@ -96,7 +97,7 @@ Answer:
 ### LLM Configuration
 | Tham số | Giá trị |
 |---------|---------|
-| Model | TODO (gpt-4o-mini / gemini-1.5-flash) |
+| Model | gpt-4o-mini / gemini-1.5-flash |
 | Temperature | 0 (để output ổn định cho eval) |
 | Max tokens | 512 |
 
@@ -118,19 +119,22 @@ Answer:
 
 ## 6. Diagram (tùy chọn)
 
-> TODO: Vẽ sơ đồ pipeline nếu có thời gian. Có thể dùng Mermaid hoặc drawio.
-
 ```mermaid
 graph LR
     A[User Query] --> B[Query Embedding]
-    B --> C[ChromaDB Vector Search]
-    C --> D[Top-10 Candidates]
-    D --> E{Rerank?}
-    E -->|Yes| F[Cross-Encoder]
-    E -->|No| G[Top-3 Select]
+    A --> C[BM25 Sparse Mode]
+    B --> D[ChromaDB Vector Search]
+    D --> E[Top-N Dense Results]
+    C --> F[Top-N Sparse Results]
+    E --> G[Reciprocal Rank Fusion]
     F --> G
-    G --> H[Build Context Block]
-    H --> I[Grounded Prompt]
-    I --> J[LLM]
-    J --> K[Answer + Citation]
+    G --> H[Top Candidates List]
+    H --> I{Use Rerank?}
+    I -->|Yes| J[Cross-Encoder Reranker]
+    I -->|No| K[Top-K Selection]
+    J --> K
+    K --> L[Format Context Block]
+    L --> M[Assemble Grounded Prompt]
+    M --> N[LLM Generation]
+    N --> O[Final Grounded Answer]
 ```
