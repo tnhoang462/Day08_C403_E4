@@ -233,17 +233,35 @@ def score_completeness(
       2: Thiếu nhiều thông tin quan trọng
       1: Thiếu phần lớn nội dung cốt lõi
 
-    TODO Sprint 4:
-    Option 1 — Chấm thủ công: So sánh answer vs expected_answer và chấm.
-    Option 2 — LLM-as-Judge:
-        "Compare the model answer with the expected answer.
-         Rate completeness 1-5. Are all key points covered?
-         Output: {'score': int, 'missing_points': [str]}"
+    Sử dụng LLM-as-Judge.
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_completeness (so sánh với expected_answer)",
-    }
+    if not answer or answer.startswith("PIPELINE_NOT_IMPLEMENTED") or answer.startswith("ERROR:"):
+        return {"score": None, "notes": "Pipeline error — skip scoring"}
+
+    if not expected_answer:
+        return {"score": None, "notes": "No expected answer provided"}
+
+    prompt = f"""You are an evaluation judge for a RAG system.
+Rate the COMPLETENESS of the model's answer by comparing it to the reference (expected) answer.
+
+Completeness measures whether the model covers all the key points in the reference answer.
+
+Scoring scale (1-5):
+  5 = All key points from the expected answer are present
+  4 = Missing one minor detail
+  3 = Missing some important information
+  2 = Missing much of the important information
+  1 = Missing most of the core content
+
+User question: {query}
+
+Expected answer (reference): {expected_answer}
+
+Model answer: {answer}
+
+Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<one sentence>"}}"""
+
+    return _llm_judge(prompt, fallback_score=3)
 
 
 # =============================================================================
