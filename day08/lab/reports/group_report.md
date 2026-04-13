@@ -8,7 +8,7 @@
 | Trần Nhật Hoàng | Retrieval Owner / Debug Support | 2A202600431 |
 | Trương Đặng Gia Huy | Eval Owner |  |
 | Lê Quý Công | Indexing Owner & Unit Test | 2A202600104 |
-| Phạm Đỗ Ngọc Minh | Tech Lead, Eval Owner & Documentation | |
+| Phạm Đỗ Ngọc Minh | Tech Lead, Eval Owner & Documentation | 2A202600256 |
 | Trần Minh Toàn | Retrieval Owner | |
 | Nguyễn Xuân Mong | Eval Owner | |
 
