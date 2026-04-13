@@ -27,6 +27,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_BM25_CACHE: Optional[Tuple[List[Dict[str, Any]], Any]] = None
+_CROSS_ENCODER = None
+_OPENAI_CLIENT = None
+_GEMINI_MODEL = None
+
 # =============================================================================
 # CẤU HÌNH
 # =============================================================================
@@ -76,10 +81,52 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]
         # Lưu ý: distances trong ChromaDB cosine = 1 - similarity
         # Score = 1 - distance
     """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement retrieve_dense().\n"
-        "Tham khảo comment trong hàm để biết cách query ChromaDB."
+    import chromadb
+    from index import get_embedding, CHROMA_DB_DIR
+
+    client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
+    collection = client.get_collection("rag_lab")
+
+    query_embedding = get_embedding(query)
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
     )
+
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
+
+    chunks: List[Dict[str, Any]] = []
+    for doc, meta, distance in zip(documents, metadatas, distances):
+        chunks.append({
+            "text": doc,
+            "metadata": meta or {},
+            "score": 1 - float(distance),
+        })
+    return chunks
+
+
+def _load_all_chunks_from_chroma() -> List[Dict[str, Any]]:
+    import chromadb
+    from index import CHROMA_DB_DIR
+
+    client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
+    collection = client.get_collection("rag_lab")
+    results = collection.get(include=["documents", "metadatas"])
+
+    docs = results.get("documents", [])
+    metas = results.get("metadatas", [])
+
+    all_chunks: List[Dict[str, Any]] = []
+    for doc, meta in zip(docs, metas):
+        all_chunks.append({
+            "text": doc,
+            "metadata": meta or {},
+            "score": 0.0,
+        })
+    return all_chunks
 
 
 # =============================================================================
@@ -109,10 +156,34 @@ def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any
         scores = bm25.get_scores(tokenized_query)
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
     """
-    # TODO Sprint 3: Implement BM25 search
-    # Tạm thời return empty list
-    print("[retrieve_sparse] Chưa implement — Sprint 3")
-    return []
+    global _BM25_CACHE
+    from rank_bm25 import BM25Okapi
+
+    if _BM25_CACHE is None:
+        all_chunks = _load_all_chunks_from_chroma()
+        tokenized_corpus = [chunk["text"].lower().split() for chunk in all_chunks]
+        bm25 = BM25Okapi(tokenized_corpus)
+        _BM25_CACHE = (all_chunks, bm25)
+
+    all_chunks, bm25 = _BM25_CACHE
+    tokenized_query = query.lower().split()
+    scores = bm25.get_scores(tokenized_query)
+    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+
+    max_score = max([scores[i] for i in top_indices], default=0.0)
+    if max_score <= 0:
+        max_score = 1.0
+
+    results: List[Dict[str, Any]] = []
+    for idx in top_indices:
+        chunk = all_chunks[idx]
+        results.append({
+            "text": chunk["text"],
+            "metadata": chunk["metadata"],
+            "score": float(scores[idx]) / max_score,
+        })
+    return results
+
 
 
 # =============================================================================
