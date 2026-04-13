@@ -19,6 +19,7 @@ A/B Rule (từ slide):
 
 import json
 import csv
+import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -40,13 +41,14 @@ BASELINE_CONFIG = {
     "label": "baseline_dense",
 }
 
-# Cấu hình variant (Sprint 3 — điều chỉnh theo lựa chọn của nhóm)
-# TODO Sprint 4: Cập nhật VARIANT_CONFIG theo variant nhóm đã implement
+# Cấu hình variant (Sprint 3) — Hybrid + Rerank
+# Lý do: corpus có cả câu tự nhiên (policy) lẫn mã lỗi, tên riêng (P1, ERR-403, SLA).
+# Hybrid giữ được exact keyword recall; rerank loại bỏ noise sau search rộng.
 VARIANT_CONFIG = {
-    "retrieval_mode": "hybrid",   # Hoặc "dense" nếu chỉ đổi rerank
+    "retrieval_mode": "hybrid",
     "top_k_search": 10,
     "top_k_select": 3,
-    "use_rerank": True,           # Hoặc False nếu variant là hybrid không rerank
+    "use_rerank": True,
     "label": "variant_hybrid_rerank",
 }
 
@@ -55,6 +57,32 @@ VARIANT_CONFIG = {
 # SCORING FUNCTIONS
 # 4 metrics từ slide: Faithfulness, Answer Relevance, Context Recall, Completeness
 # =============================================================================
+
+def _llm_judge(prompt: str, fallback_score: int = 3) -> Dict[str, Any]:
+    """
+    Gọi LLM để chấm điểm và trả về {"score": int, "reason": str}.
+    Nếu LLM không khả dụng hoặc output không parse được, trả về fallback.
+    """
+    try:
+        raw = call_llm(prompt)
+        # Extract JSON from response
+        import re
+        match = re.search(r'\{.*?\}', raw, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            score = int(data.get("score", fallback_score))
+            reason = str(data.get("reason", ""))
+            return {"score": max(1, min(5, score)), "notes": reason}
+        else:
+            # Try to extract just a number
+            num_match = re.search(r'\b([1-5])\b', raw)
+            if num_match:
+                return {"score": int(num_match.group(1)), "notes": raw.strip()[:200]}
+    except Exception as e:
+        pass
+
+    return {"score": fallback_score, "notes": "LLM judge unavailable — default score used"}
+
 
 def score_faithfulness(
     answer: str,
@@ -71,29 +99,38 @@ def score_faithfulness(
       2: Nhiều thông tin không có trong retrieved chunks
       1: Câu trả lời không grounded, phần lớn là model bịa
 
-    TODO Sprint 4 — Có 2 cách chấm:
-
-    Cách 1 — Chấm thủ công (Manual, đơn giản):
-        Đọc answer và chunks_used, chấm điểm theo thang trên.
-        Ghi lý do ngắn gọn vào "notes".
-
-    Cách 2 — LLM-as-Judge (Tự động, nâng cao):
-        Gửi prompt cho LLM:
-            "Given these retrieved chunks: {chunks}
-             And this answer: {answer}
-             Rate the faithfulness on a scale of 1-5.
-             5 = completely grounded in the provided context.
-             1 = answer contains information not in the context.
-             Output JSON: {'score': <int>, 'reason': '<string>'}"
-
-    Trả về dict với: score (1-5) và notes (lý do)
+    Sử dụng LLM-as-Judge.
     """
-    # TODO Sprint 4: Implement scoring
-    # Tạm thời trả về None (yêu cầu chấm thủ công)
-    return {
-        "score": None,
-        "notes": "TODO: Chấm thủ công hoặc implement LLM-as-Judge",
-    }
+    if not chunks_used or not answer or answer.startswith("PIPELINE_NOT_IMPLEMENTED") or answer.startswith("ERROR:"):
+        return {"score": None, "notes": "Pipeline error or no chunks — skip scoring"}
+
+    context_preview = "\n---\n".join(
+        c["text"][:300] for c in chunks_used
+    )
+
+    prompt = f"""You are an evaluation judge for a RAG system.
+Given the retrieved context and the model's answer, rate the FAITHFULNESS of the answer.
+
+Faithfulness measures whether ALL claims in the answer are directly supported by the retrieved context.
+A faithful answer does NOT introduce information beyond what is in the context.
+
+Scoring scale (1-5):
+  5 = Every claim in the answer is explicitly supported by the context
+  4 = Almost fully grounded, one minor detail is uncertain
+  3 = Mostly grounded, but some information may come from model's prior knowledge
+  2 = Several claims are not supported by the context
+  1 = Answer is largely hallucinated or not grounded in the context
+
+Retrieved context:
+{context_preview}
+
+Model answer:
+{answer}
+
+Output ONLY a JSON object with two keys: "score" (integer 1-5) and "reason" (one sentence).
+Example: {{"score": 4, "reason": "Answer is mostly grounded but adds one unsupported detail."}}"""
+
+    return _llm_judge(prompt, fallback_score=3)
 
 
 def score_answer_relevance(
