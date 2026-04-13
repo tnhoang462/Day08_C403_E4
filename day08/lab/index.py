@@ -31,8 +31,8 @@ CHROMA_DB_DIR = Path(__file__).parent / "chroma_db"
 
 # TODO Sprint 1: Điều chỉnh chunk size và overlap theo quyết định của nhóm
 # Gợi ý từ slide: chunk 300-500 tokens, overlap 50-80 tokens
-CHUNK_SIZE = 400       # tokens (ước lượng bằng số ký tự / 4)
-CHUNK_OVERLAP = 80     # tokens overlap giữa các chunk
+CHUNK_SIZE = 300       # tokens (ước lượng bằng số ký tự / 4)
+CHUNK_OVERLAP = 30     # tokens overlap giữa các chunk
 
 
 # =============================================================================
@@ -191,6 +191,12 @@ def _split_by_size(
             "metadata": {**base_metadata, "section": section},
         }]
 
+    if chunk_chars <= 0:
+        raise ValueError("chunk_chars must be greater than 0")
+
+    if overlap_chars < 0:
+        raise ValueError("overlap_chars must be non-negative")
+
     # TODO: Implement split theo paragraph với overlap
     # Gợi ý:
     # paragraphs = text.split("\n\n")
@@ -202,15 +208,27 @@ def _split_by_size(
         end = min(start + chunk_chars, len(text))
         chunk_text = text[start:end]
 
-        # TODO: Tìm ranh giới tự nhiên gần nhất (dấu xuống dòng, dấu chấm)
-        # thay vì cắt giữa câu
+        if end < len(text):
+            newline_pos = text.rfind("\n", start, end)
+            period_pos = text.rfind(".", start, end)
+            boundary = max(newline_pos, period_pos)
+            if boundary > start:
+                end = boundary + 1
+                chunk_text = text[start:end]
 
         chunks.append({
             "text": chunk_text,
             "metadata": {**base_metadata, "section": section},
         })
+
+        if end >= len(text):
+            break
+
         # Overlap: lùi lại overlap_chars để chunk sau có ngữ cảnh từ chunk trước
-        start = end - overlap_chars
+        next_start = end - overlap_chars
+        if next_start <= start:
+            next_start = start + 1
+        start = next_start
 
     return chunks
 
@@ -241,17 +259,24 @@ def get_embedding(text: str) -> List[float]:
         model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
         return model.encode(text).tolist()
     """
-    raise NotImplementedError(
-        "TODO: Implement get_embedding().\n"
-        "Chọn Option A (OpenAI) hoặc Option B (Sentence Transformers) trong TODO comment."
-    )
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    try:
+        response = client.embeddings.create(
+            input=text,
+            model="text-embedding-3-small"
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        print(f"API OPENAI-Embedding Error: {e}")
+        return None
 
 
 def build_index(docs_dir: Path = DOCS_DIR, db_dir: Path = CHROMA_DB_DIR) -> None:
     """
     Pipeline hoàn chỉnh: đọc docs → preprocess → chunk → embed → store.
 
-    TODO Sprint 1:
+    Sprint 1:
     1. Cài thư viện: pip install chromadb
     2. Khởi tạo ChromaDB client và collection
     3. Với mỗi file trong docs_dir:
@@ -265,7 +290,7 @@ def build_index(docs_dir: Path = DOCS_DIR, db_dir: Path = CHROMA_DB_DIR) -> None
         import chromadb
         client = chromadb.PersistentClient(path=str(db_dir))
         collection = client.get_or_create_collection(
-            name="rag_lab",
+            name="ten",
             metadata={"hnsw:space": "cosine"}
         )
     """
@@ -274,9 +299,16 @@ def build_index(docs_dir: Path = DOCS_DIR, db_dir: Path = CHROMA_DB_DIR) -> None
     print(f"Đang build index từ: {docs_dir}")
     db_dir.mkdir(parents=True, exist_ok=True)
 
-    # TODO: Khởi tạo ChromaDB
-    # client = chromadb.PersistentClient(path=str(db_dir))
-    # collection = client.get_or_create_collection(...)
+    # Khởi tạo ChromaDB
+    try:
+        client = chromadb.PersistentClient(path=str(db_dir))
+        collection = client.get_or_create_collection(
+            name="day08_lab",
+            metadata={"hnsw:space": "cosine"}
+        )
+    except Exception as e:
+        print(f"Connect to ChromaDB Error: {e}")
+        return
 
     total_chunks = 0
     doc_files = list(docs_dir.glob("*.txt"))
@@ -289,32 +321,25 @@ def build_index(docs_dir: Path = DOCS_DIR, db_dir: Path = CHROMA_DB_DIR) -> None
         print(f"  Processing: {filepath.name}")
         raw_text = filepath.read_text(encoding="utf-8")
 
-        # TODO: Gọi preprocess_document
-        # doc = preprocess_document(raw_text, str(filepath))
-
-        # TODO: Gọi chunk_document
-        # chunks = chunk_document(doc)
-
-        # TODO: Embed và lưu từng chunk vào ChromaDB
-        # for i, chunk in enumerate(chunks):
-        #     chunk_id = f"{filepath.stem}_{i}"
-        #     embedding = get_embedding(chunk["text"])
-        #     collection.upsert(
-        #         ids=[chunk_id],
-        #         embeddings=[embedding],
-        #         documents=[chunk["text"]],
-        #         metadatas=[chunk["metadata"]],
-        #     )
-        # total_chunks += len(chunks)
-
-        # Placeholder để code không lỗi khi chưa implement
+        # Gọi preprocess_document
         doc = preprocess_document(raw_text, str(filepath))
+
+        # Gọi chunk_document
         chunks = chunk_document(doc)
-        print(f"    → {len(chunks)} chunks (embedding chưa implement)")
+
+        # Embed và lưu từng chunk vào ChromaDB
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{filepath.stem}_{i}"
+            embedding = get_embedding(chunk["text"])
+            collection.upsert(
+                ids=[chunk_id],
+                embeddings=[embedding],
+                documents=[chunk["text"]],
+                metadatas=[chunk["metadata"]],
+            )
         total_chunks += len(chunks)
 
     print(f"\nHoàn thành! Tổng số chunks: {total_chunks}")
-    print("Lưu ý: Embedding chưa được implement. Xem TODO trong get_embedding() và build_index().")
 
 
 # =============================================================================
@@ -336,7 +361,7 @@ def list_chunks(db_dir: Path = CHROMA_DB_DIR, n: int = 5) -> None:
     try:
         import chromadb
         client = chromadb.PersistentClient(path=str(db_dir))
-        collection = client.get_collection("rag_lab")
+        collection = client.get_collection("day08_lab")
         results = collection.get(limit=n, include=["documents", "metadatas"])
 
         print(f"\n=== Top {n} chunks trong index ===\n")
@@ -348,8 +373,7 @@ def list_chunks(db_dir: Path = CHROMA_DB_DIR, n: int = 5) -> None:
             print(f"  Text preview: {doc[:120]}...")
             print()
     except Exception as e:
-        print(f"Lỗi khi đọc index: {e}")
-        print("Hãy chạy build_index() trước.")
+        print(f"Connect to ChromaDB Error: {e}. \n Run build_index() first!")
 
 
 def inspect_metadata_coverage(db_dir: Path = CHROMA_DB_DIR) -> None:
@@ -366,12 +390,12 @@ def inspect_metadata_coverage(db_dir: Path = CHROMA_DB_DIR) -> None:
     try:
         import chromadb
         client = chromadb.PersistentClient(path=str(db_dir))
-        collection = client.get_collection("rag_lab")
+        collection = client.get_collection("day08_lab")
         results = collection.get(include=["metadatas"])
 
         print(f"\nTổng chunks: {len(results['metadatas'])}")
 
-        # TODO: Phân tích metadata
+        # Phân tích metadata
         # Đếm theo department, kiểm tra effective_date missing, v.v.
         departments = {}
         missing_date = 0
@@ -387,7 +411,7 @@ def inspect_metadata_coverage(db_dir: Path = CHROMA_DB_DIR) -> None:
         print(f"Chunks thiếu effective_date: {missing_date}")
 
     except Exception as e:
-        print(f"Lỗi: {e}. Hãy chạy build_index() trước.")
+        print(f"Connect to ChromaDB Error: {e}. \n Run build_index() first!")
 
 
 # =============================================================================
