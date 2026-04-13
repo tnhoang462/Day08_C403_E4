@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from rag_answer import rag_answer
+from rag_answer import rag_answer, call_llm
 
 # =============================================================================
 # CẤU HÌNH
@@ -79,7 +79,7 @@ def _llm_judge(prompt: str, fallback_score: int = 3) -> Dict[str, Any]:
             if num_match:
                 return {"score": int(num_match.group(1)), "notes": raw.strip()[:200]}
     except Exception as e:
-        pass
+        print(f"[_llm_judge] Lỗi: {e}")
 
     return {"score": fallback_score, "notes": "LLM judge unavailable — default score used"}
 
