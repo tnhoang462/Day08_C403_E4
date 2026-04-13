@@ -330,215 +330,283 @@ def rerank(
 def transform_query(query: str, strategy: str = "expansion") -> List[str]:
     """
     Biến đổi query để tăng recall.
-
+ 
     Strategies:
       - "expansion": Thêm từ đồng nghĩa, alias, tên cũ
       - "decomposition": Tách query phức tạp thành 2-3 sub-queries
       - "hyde": Sinh câu trả lời giả (hypothetical document) để embed thay query
-
-    TODO Sprint 3 (nếu chọn query transformation):
-    Gọi LLM với prompt phù hợp với từng strategy.
-
-    Ví dụ expansion prompt:
-        "Given the query: '{query}'
-         Generate 2-3 alternative phrasings or related terms in Vietnamese.
-         Output as JSON array of strings."
-
-    Ví dụ decomposition:
-        "Break down this complex query into 2-3 simpler sub-queries: '{query}'
-         Output as JSON array."
-
-    Khi nào dùng:
-    - Expansion: query dùng alias/tên cũ (ví dụ: "Approval Matrix" → "Access Control SOP")
-    - Decomposition: query hỏi nhiều thứ một lúc
-    - HyDE: query mơ hồ, search theo nghĩa không hiệu quả
+ 
+    Yêu cầu OPENAI_API_KEY (dùng LLM để transform).
+    Nếu không có key, trả về query gốc.
     """
-    # TODO Sprint 3: Implement query transformation
-    # Tạm thời trả về query gốc
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key:
+        print("[transform_query] Không có OPENAI_API_KEY, trả về query gốc")
+        return [query]
+ 
+    from openai import OpenAI
+    client = OpenAI(api_key=openai_key)
+ 
+    if strategy == "expansion":
+        prompt = (
+            f"Given the user query: '{query}'\n"
+            "Generate 2-3 alternative phrasings or related search terms "
+            "(in the same language as the query). Include the original query as the first item.\n"
+            'Output ONLY a JSON array of strings, e.g. ["original", "alt1", "alt2"]'
+        )
+    elif strategy == "decomposition":
+        prompt = (
+            f"Break down this complex query into 2-3 simpler, self-contained sub-queries "
+            f"that together cover the original intent: '{query}'\n"
+            'Output ONLY a JSON array of strings, e.g. ["sub1", "sub2"]'
+        )
+    elif strategy == "hyde":
+        prompt = (
+            f"Write a short paragraph (3-5 sentences) that would be a perfect answer "
+            f"to this question. Write in the same language as the query.\n"
+            f"Question: '{query}'\n"
+            "Output ONLY the paragraph, no explanation."
+        )
+    else:
+        return [query]
+ 
+    try:
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        content = response.choices[0].message.content.strip()
+ 
+        if strategy == "hyde":
+            return [query, content]
+ 
+        # expansion / decomposition → parse JSON array
+        if content.startswith("```"):
+            content = content.strip("`")
+            if content.startswith("json"):
+                content = content[4:]
+ 
+        queries = json.loads(content)
+        if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+            if query not in queries:
+                queries.insert(0, query)
+            return queries
+ 
+    except Exception as e:
+        print(f"[transform_query] Error: {e}, fallback về query gốc")
+ 
     return [query]
 
 
 # =============================================================================
 # GENERATION — GROUNDED ANSWER FUNCTION
 # =============================================================================
-
-
+ 
+ 
 def build_context_block(chunks: List[Dict[str, Any]]) -> str:
     """
     Đóng gói danh sách chunks thành context block để đưa vào prompt.
-
-    Format: structured snippets với source, section, score (từ slide).
+ 
+    Format: structured snippets với source, section, score.
     Mỗi chunk có số thứ tự [1], [2], ... để model dễ trích dẫn.
+    Bao gồm metadata từ index.py: source, section, department, effective_date.
     """
     context_parts = []
     for i, chunk in enumerate(chunks, 1):
         meta = chunk.get("metadata", {})
         source = meta.get("source", "unknown")
         section = meta.get("section", "")
-        score = chunk.get("score", 0)
+        department = meta.get("department", "")
+        effective_date = meta.get("effective_date", "")
+        # Ưu tiên score tốt nhất: rerank > rrf > retrieval
+        score = chunk.get("rerank_score", chunk.get("rrf_score", chunk.get("score", 0)))
         text = chunk.get("text", "")
-
-        # TODO: Tùy chỉnh format nếu muốn (thêm effective_date, department, ...)
+ 
         header = f"[{i}] {source}"
         if section:
-            header += f" | {section}"
+            header += f" | Section: {section}"
+        if department and department != "unknown":
+            header += f" | Dept: {department}"
+        if effective_date and effective_date != "unknown":
+            header += f" | Effective: {effective_date}"
         if score > 0:
             header += f" | score={score:.2f}"
-
+ 
         context_parts.append(f"{header}\n{text}")
-
+ 
     return "\n\n".join(context_parts)
-
-
+ 
+ 
 def build_grounded_prompt(query: str, context_block: str) -> str:
     """
-    Xây dựng grounded prompt theo 4 quy tắc từ slide:
+    Xây dựng grounded prompt theo 4 quy tắc:
     1. Evidence-only: Chỉ trả lời từ retrieved context
     2. Abstain: Thiếu context thì nói không đủ dữ liệu
     3. Citation: Gắn source/section khi có thể
     4. Short, clear, stable: Output ngắn, rõ, nhất quán
-
-    TODO Sprint 2:
-    Đây là prompt baseline. Trong Sprint 3, bạn có thể:
-    - Thêm hướng dẫn về format output (JSON, bullet points)
-    - Thêm ngôn ngữ phản hồi (tiếng Việt vs tiếng Anh)
-    - Điều chỉnh tone phù hợp với use case (CS helpdesk, IT support)
     """
     prompt = f"""Answer only from the retrieved context below.
 If the context is insufficient to answer the question, say you do not know and do not make up information.
 Cite the source field (in brackets like [1]) when possible.
 Keep your answer short, clear, and factual.
 Respond in the same language as the question.
-
+ 
 Question: {query}
-
+ 
 Context:
 {context_block}
-
+ 
 Answer:"""
     return prompt
-
-
+ 
+ 
 def call_llm(prompt: str) -> str:
     """
     Gọi LLM để sinh câu trả lời.
-
-    TODO Sprint 2:
-    Chọn một trong hai:
-
-    Option A — OpenAI (cần OPENAI_API_KEY):
+    Tự động chọn backend dựa trên API key có sẵn:
+      - OPENAI_API_KEY  → OpenAI (LLM_MODEL)
+      - GOOGLE_API_KEY  → Google Gemini
+ 
+    Dùng temperature=0 để output ổn định, dễ đánh giá.
+    """
+    openai_key = os.getenv("OPENAI_API_KEY")
+    google_key = os.getenv("GOOGLE_API_KEY")
+ 
+    if openai_key:
         from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = OpenAI(api_key=openai_key)
         response = client.chat.completions.create(
             model=LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,     # temperature=0 để output ổn định, dễ đánh giá
+            temperature=0,
             max_tokens=512,
         )
         return response.choices[0].message.content
-
-    Option B — Google Gemini (cần GOOGLE_API_KEY):
+ 
+    elif google_key:
         import google.generativeai as genai
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        genai.configure(api_key=google_key)
         model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0,
+                max_output_tokens=512,
+            ),
+        )
         return response.text
-
-    Lưu ý: Dùng temperature=0 hoặc thấp để output ổn định cho evaluation.
-    """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement call_llm().\n"
-        "Chọn Option A (OpenAI) hoặc Option B (Gemini) trong TODO comment."
-    )
-
-
+ 
+    else:
+        raise RuntimeError(
+            "Không tìm thấy API key. Đặt OPENAI_API_KEY hoặc GOOGLE_API_KEY trong .env"
+        )
+ 
+ 
 def rag_answer(
     query: str,
     retrieval_mode: str = "dense",
     top_k_search: int = TOP_K_SEARCH,
     top_k_select: int = TOP_K_SELECT,
     use_rerank: bool = False,
+    use_query_transform: bool = False,
+    query_transform_strategy: str = "expansion",
+    where: Optional[Dict[str, Any]] = None,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """
-    Pipeline RAG hoàn chỉnh: query → retrieve → (rerank) → generate.
-
+    Pipeline RAG hoàn chỉnh: query → (transform) → retrieve → (rerank) → generate.
+ 
     Args:
         query: Câu hỏi
         retrieval_mode: "dense" | "sparse" | "hybrid"
         top_k_search: Số chunk lấy từ vector store (search rộng)
         top_k_select: Số chunk đưa vào prompt (sau rerank/select)
         use_rerank: Có dùng cross-encoder rerank không
+        use_query_transform: Có dùng query transformation không (Sprint 3)
+        query_transform_strategy: "expansion" | "decomposition" | "hyde"
+        where: Optional metadata filter (department, access, ...)
         verbose: In thêm thông tin debug
-
+ 
     Returns:
-        Dict với:
-          - "answer": câu trả lời grounded
-          - "sources": list source names trích dẫn
-          - "chunks_used": list chunks đã dùng
-          - "query": query gốc
-          - "config": cấu hình pipeline đã dùng
-
-    TODO Sprint 2 — Implement pipeline cơ bản:
-    1. Chọn retrieval function dựa theo retrieval_mode
-    2. Gọi rerank() nếu use_rerank=True
-    3. Truncate về top_k_select chunks
-    4. Build context block và grounded prompt
-    5. Gọi call_llm() để sinh câu trả lời
-    6. Trả về kết quả kèm metadata
-
-    TODO Sprint 3 — Thử các variant:
-    - Variant A: đổi retrieval_mode="hybrid"
-    - Variant B: bật use_rerank=True
-    - Variant C: thêm query transformation trước khi retrieve
+        Dict với "answer", "sources", "chunks_used", "query", "config"
     """
     config = {
         "retrieval_mode": retrieval_mode,
         "top_k_search": top_k_search,
         "top_k_select": top_k_select,
         "use_rerank": use_rerank,
+        "use_query_transform": use_query_transform,
+        "query_transform_strategy": query_transform_strategy,
+        "where": where,
     }
-
-    # --- Bước 1: Retrieve ---
-    if retrieval_mode == "dense":
-        candidates = retrieve_dense(query, top_k=top_k_search)
-    elif retrieval_mode == "sparse":
-        candidates = retrieve_sparse(query, top_k=top_k_search)
-    elif retrieval_mode == "hybrid":
-        candidates = retrieve_hybrid(query, top_k=top_k_search)
-    else:
+ 
+    # --- Bước 0: Query Transformation (optional, Sprint 3) ---
+    queries = [query]
+    if use_query_transform:
+        queries = transform_query(query, strategy=query_transform_strategy)
+        if verbose:
+            print(f"[RAG] Transformed queries: {queries}")
+ 
+    # --- Bước 1: Retrieve (chạy cho mỗi query variant, dedup theo ID) ---
+    retrieval_fn = {
+        "dense": retrieve_dense,
+        "sparse": retrieve_sparse,
+        "hybrid": retrieve_hybrid,
+    }.get(retrieval_mode)
+ 
+    if retrieval_fn is None:
         raise ValueError(f"retrieval_mode không hợp lệ: {retrieval_mode}")
-
+ 
+    seen_ids = set()
+    candidates = []
+    for q in queries:
+        results = retrieval_fn(q, top_k=top_k_search, where=where)
+        for chunk in results:
+            chunk_id = chunk.get("id", chunk.get("text", "")[:80])
+            if chunk_id not in seen_ids:
+                seen_ids.add(chunk_id)
+                candidates.append(chunk)
+ 
+    # Sort toàn bộ candidates theo score giảm dần
+    score_key = "rrf_score" if retrieval_mode == "hybrid" else "score"
+    candidates.sort(key=lambda c: c.get(score_key, 0), reverse=True)
+ 
     if verbose:
         print(f"\n[RAG] Query: {query}")
-        print(f"[RAG] Retrieved {len(candidates)} candidates (mode={retrieval_mode})")
-        for i, c in enumerate(candidates[:3]):
-            print(
-                f"  [{i + 1}] score={c.get('score', 0):.3f} | {c['metadata'].get('source', '?')}"
-            )
-
+        print(f"[RAG] Retrieved {len(candidates)} unique candidates (mode={retrieval_mode})")
+        for i, c in enumerate(candidates[:5]):
+            print(f"  [{i+1}] score={c.get(score_key, 0):.3f} | {c['metadata'].get('source', '?')}")
+ 
     # --- Bước 2: Rerank (optional) ---
     if use_rerank:
         candidates = rerank(query, candidates, top_k=top_k_select)
+        if verbose:
+            print(f"[RAG] After rerank: {len(candidates)} chunks")
+            for i, c in enumerate(candidates):
+                print(f"  [{i+1}] rerank={c.get('rerank_score', 0):.3f} | {c['metadata'].get('source', '?')}")
     else:
         candidates = candidates[:top_k_select]
-
+ 
     if verbose:
-        print(f"[RAG] After select: {len(candidates)} chunks")
-
+        print(f"[RAG] Final selection: {len(candidates)} chunks")
+ 
     # --- Bước 3: Build context và prompt ---
     context_block = build_context_block(candidates)
     prompt = build_grounded_prompt(query, context_block)
-
+ 
     if verbose:
         print(f"\n[RAG] Prompt:\n{prompt[:500]}...\n")
-
+ 
     # --- Bước 4: Generate ---
     answer = call_llm(prompt)
-
+ 
     # --- Bước 5: Extract sources ---
-    sources = list({c["metadata"].get("source", "unknown") for c in candidates})
-
+    sources = list({
+        c["metadata"].get("source", "unknown")
+        for c in candidates
+    })
+ 
     return {
         "query": query,
         "answer": answer,
