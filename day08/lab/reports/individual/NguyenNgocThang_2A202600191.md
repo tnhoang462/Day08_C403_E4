@@ -2,7 +2,7 @@
 
 **Họ và tên:** Nguyễn Ngọc Thắng  
 **Mã SV:** 2A202600191  
-**Vai trò trong nhóm:** Generation / RAG Pipeline Owner (từ Query Transform)  
+**Vai trò trong nhóm:** LLM Configurator & RAG Pipeline Owner  
 **Ngày nộp:** 2026-04-13  
 **Độ dài yêu cầu:** 500–800 từ
 
