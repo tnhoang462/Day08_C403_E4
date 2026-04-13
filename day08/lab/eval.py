@@ -148,12 +148,28 @@ def score_answer_relevance(
       2: Trả lời lạc đề một phần
       1: Không trả lời câu hỏi
 
-    TODO Sprint 4: Implement tương tự score_faithfulness
+    Sử dụng LLM-as-Judge.
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_answer_relevance",
-    }
+    if not answer or answer.startswith("PIPELINE_NOT_IMPLEMENTED") or answer.startswith("ERROR:"):
+        return {"score": None, "notes": "Pipeline error — skip scoring"}
+
+    prompt = f"""You are an evaluation judge for a RAG system.
+        Rate how well the model's answer addresses the user's question (ANSWER RELEVANCE).
+
+        Scoring scale (1-5):
+        5 = Directly and completely answers the question
+        4 = Answers correctly but misses minor secondary details
+        3 = Related but does not fully address the core of the question
+        2 = Partially off-topic
+        1 = Does not answer the question at all
+
+        User question: {query}
+
+        Model answer: {answer}
+
+        Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<one sentence>"}}"""
+
+    return _llm_judge(prompt, fallback_score=3)
 
 
 def score_context_recall(
@@ -168,16 +184,6 @@ def score_context_recall(
 
     Cách tính đơn giản:
         recall = (số expected source được retrieve) / (tổng số expected sources)
-
-    Ví dụ:
-        expected_sources = ["policy/refund-v4.pdf", "sla-p1-2026.pdf"]
-        retrieved_sources = ["policy/refund-v4.pdf", "helpdesk-faq.md"]
-        recall = 1/2 = 0.5
-
-    TODO Sprint 4:
-    1. Lấy danh sách source từ chunks_used
-    2. Kiểm tra xem expected_sources có trong retrieved sources không
-    3. Tính recall score
     """
     if not expected_sources:
         # Câu hỏi không có expected source (ví dụ: "Không đủ dữ liệu" cases)
@@ -188,7 +194,6 @@ def score_context_recall(
         for c in chunks_used
     }
 
-    # TODO: Kiểm tra matching theo partial path (vì source paths có thể khác format)
     found = 0
     missing = []
     for expected in expected_sources:
