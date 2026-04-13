@@ -6,11 +6,11 @@
 |-----|---------|-------|
 | Nguyễn Ngọc Thắng | Tech Lead & RAG Pipeline Owner | 2A202600191 |
 | Trần Nhật Hoàng | Retrieval Owner / Debug Support | 2A202600431 |
-| Trương Đặng Gia Huy | Eval Owner |  |
+| Trương Đặng Gia Huy | Eval Owner | 2A202600436 |
 | Lê Quý Công | Indexing Owner & Unit Test | 2A202600104 |
-| Phạm Đỗ Ngọc Minh | Tech Lead, Eval Owner & Documentation | |
-| Trần Minh Toàn | Retrieval Owner | |
-| Nguyễn Xuân Mong | Eval Owner | |
+| Phạm Đỗ Ngọc Minh | Tech Lead, Eval Owner & Documentation | 2A202600256 |
+| Trần Minh Toàn | Retrieval Owner | 2A202600297 |
+| Nguyễn Xuân Mong | Eval Owner |2A202600246 |
 
 **Ngày nộp:** 14/4/2026  
 **Repo:** https://github.com/tnhoang462/Day08_C403_E4  
@@ -114,9 +114,11 @@ Variant thể hiện tính ưu việt rõ ràng so với Baseline. Điểm nhấ
 |------------|-------------|--------|
 | Lê Quý Công | Chunking & Data Indexing, Unit Test, Fake Config | Sprint 1 |
 | Nguyễn Ngọc Thắng | Generation, Context Builder, Architecture Design (Tech Lead) | Sprint 2, 3 |
+| Trần Nhật Hoàng | Retrieve_hybrid và Rerank, Architecture Design | Sprint 2, 3 |
 | Trần Minh Toàn | Baseline vs Hybrid Retrieval Comparison | Sprint 1, 3 |
 | Phạm Đỗ Ngọc Minh | LLM-as-a-Judge Eval Loop, Documentation Owner | Sprint 4 |
-| Nguyễn Xuân Mong | Đóng gói Test Scorecard Pipeline, String Matching Recall | Sprint 4 |
+| Nguyễn Xuân Mong | thiết kế score_answer_relevance và score_context_recall | Sprint 4 |
+| Trương Đặng Gia Huy |  |  |
 
 **Điều nhóm làm tốt:**
 Tuy quy trình thiết kế Pipeline phức tạp, đặc biệt là bước biến đổi từ vòng đời cũ (Dense) sang vòng đời mới (Hybrid có Rerank), các bộ phận Eval đã làm rất tốt việc đóng gói các metrics chấm điểm như `Faithfulness`, `Answer Relevance`. Qua Evaluation độc lập này, nhóm sớm tự bắt lỗi Hallucination thay vì đợi giáo viên kiểm tra thủ công.
