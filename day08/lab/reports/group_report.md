@@ -118,7 +118,7 @@ Variant thể hiện tính ưu việt rõ ràng so với Baseline. Điểm nhấ
 | Trần Minh Toàn | Baseline vs Hybrid Retrieval Comparison | Sprint 1, 3 |
 | Phạm Đỗ Ngọc Minh | LLM-as-a-Judge Eval Loop, Documentation Owner | Sprint 4 |
 | Nguyễn Xuân Mong | thiết kế score_answer_relevance và score_context_recall | Sprint 4 |
-| Trương Đặng Gia Huy |  |  |
+| Trương Đặng Gia Huy | Vắng mặt do đi học, đọc lại code và kết quả sau lab để tự học | - |
 
 **Điều nhóm làm tốt:**
 Tuy quy trình thiết kế Pipeline phức tạp, đặc biệt là bước biến đổi từ vòng đời cũ (Dense) sang vòng đời mới (Hybrid có Rerank), các bộ phận Eval đã làm rất tốt việc đóng gói các metrics chấm điểm như `Faithfulness`, `Answer Relevance`. Qua Evaluation độc lập này, nhóm sớm tự bắt lỗi Hallucination thay vì đợi giáo viên kiểm tra thủ công.
